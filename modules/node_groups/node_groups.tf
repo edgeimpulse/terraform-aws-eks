@@ -83,10 +83,10 @@ resource "aws_eks_node_group" "workers" {
 }
 
 # workaround for: https://github.com/hashicorp/terraform-provider-aws/issues/13984
-resource "null_resource" "min_size_0_provisioners" {
+resource "null_resource" "capacity_0_provisioners" {
   for_each = {
     for k, v in local.node_groups_expanded: k => v
-    if v["min_capacity"] == 0
+    if v["desired_capacity"] == 0 || v["min_capacity"] == 0
   }
 
   triggers = {
@@ -94,22 +94,10 @@ resource "null_resource" "min_size_0_provisioners" {
   }
   provisioner "local-exec" {
       command = <<EOF
-  aws autoscaling  update-auto-scaling-group --min-size 0 --auto-scaling-group-name ${aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]}
-  EOF
-  }
-}
-resource "null_resource" "desired_capacity_0_provisioners" {
-  for_each = {
-    for k, v in local.node_groups_expanded: k => v
-    if v["desired_capacity"] == 0
-  }
-
-  triggers = {
-    node_group = aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]
-  }
-  provisioner "local-exec" {
-      command = <<EOF
-  aws autoscaling  update-auto-scaling-group --desired-capacity 0 --auto-scaling-group-name ${aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]}
+  aws autoscaling  update-auto-scaling-group\
+  --desired-capacity ${local.node_groups_expanded[each.key]["desired_capacity"]}\
+  --min-size ${local.node_groups_expanded[each.key]["min_capacity"]}\
+  --auto-scaling-group-name ${aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]}
   EOF
   }
 }
