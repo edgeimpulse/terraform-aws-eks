@@ -8,9 +8,9 @@ resource "aws_eks_node_group" "workers" {
   subnet_ids    = each.value["subnets"]
 
   scaling_config {
-    desired_size = each.value["desired_capacity"]
+    desired_size = max(each.value["desired_capacity"], 1)
     max_size     = each.value["max_capacity"]
-    min_size     = each.value["min_capacity"]
+    min_size     = max(each.value["min_capacity"], 1)
   }
 
   ami_type             = lookup(each.value, "ami_type", null)
@@ -71,8 +71,89 @@ resource "aws_eks_node_group" "workers" {
 
   lifecycle {
     create_before_destroy = true
-    ignore_changes        = [scaling_config.0.desired_size]
+    ignore_changes        = [
+      scaling_config.0.desired_size,
+      # because its not possible to dynamically ignore some additional fields, we have to add them for all cases (see: https://github.com/hashicorp/terraform/issues/24188)
+      scaling_config.0.min_size, # when we configure min_size=0 it will be configured as min_size=1 and provisioned manually to 0. terraform will detect a need to change from 0 to 1 the next "apply", so we have to ignore it
+      launch_template.0.version # in case of version='$Latest' terraform will always ask to change the version from fixed number to '$Latest'
+    ]
   }
 
   depends_on = [var.ng_depends_on]
 }
+
+# workaround for: https://github.com/hashicorp/terraform-provider-aws/issues/13984
+resource "null_resource" "min_size_0_provisioners" {
+  for_each = {
+    for k, v in local.node_groups_expanded: k => v
+    if v["min_capacity"] == 0
+  }
+
+  triggers = {
+    node_group = aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]
+  }
+  provisioner "local-exec" {
+      command = <<EOF
+  aws autoscaling  update-auto-scaling-group --min-size 0 --auto-scaling-group-name ${aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]}
+  EOF
+  }
+}
+resource "null_resource" "desired_capacity_0_provisioners" {
+  for_each = {
+    for k, v in local.node_groups_expanded: k => v
+    if v["desired_capacity"] == 0
+  }
+
+  triggers = {
+    node_group = aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]
+  }
+  provisioner "local-exec" {
+      command = <<EOF
+  aws autoscaling  update-auto-scaling-group --desired-capacity 0 --auto-scaling-group-name ${aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]}
+  EOF
+  }
+}
+
+# workaround for https://github.com/terraform-aws-modules/terraform-aws-eks/issues/860
+
+locals {
+  custom_tags_prefix = ["k8s.io/cluster-autoscaler/node-template"]
+}
+resource "null_resource" "add_custom_tags_to_asg" {
+  for_each = {
+    for k, v in local.node_groups_expanded: k => v
+    if length({ for ng_k, ng_v in lookup(var.node_groups[k], "additional_tags", {}) : ng_k => ng_v
+               if length([
+                 for prefix in local.custom_tags_prefix : prefix
+                 if substr(ng_k, 0, length(prefix)) == prefix
+                 ]) > 0 }) > 0
+  }
+  triggers = {
+    node_group = aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]
+    command = join("\n", [
+        for key, value in { for ng_k, ng_v in lookup(var.node_groups[each.key], "additional_tags", {}) : ng_k => ng_v
+               if length([
+                 for prefix in local.custom_tags_prefix : prefix
+                 if substr(ng_k, 0, length(prefix)) == prefix
+                 ]) > 0 }:
+        <<EOF
+  aws autoscaling create-or-update-tags \
+  --tags ResourceId=${aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]},ResourceType=auto-scaling-group,Key=${key},Value=${value},PropagateAtLaunch=true
+  EOF
+  ])
+  }
+  provisioner "local-exec" {
+      command = join("\n", [
+        for key, value in { for ng_k, ng_v in lookup(var.node_groups[each.key], "additional_tags", {}) : ng_k => ng_v
+               if length([
+                 for prefix in local.custom_tags_prefix : prefix
+                 if substr(ng_k, 0, length(prefix)) == prefix
+                 ]) > 0 }:
+        <<EOF
+  aws autoscaling create-or-update-tags \
+  --tags ResourceId=${aws_eks_node_group.workers[each.key]["resources"][0]["autoscaling_groups"][0]["name"]},ResourceType=auto-scaling-group,Key=${key},Value=${value},PropagateAtLaunch=true
+  EOF
+  ])
+  }
+}
+
