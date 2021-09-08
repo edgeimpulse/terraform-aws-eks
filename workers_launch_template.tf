@@ -454,6 +454,10 @@ resource "aws_launch_template" "workers_launch_template" {
       )
       iops = lookup(
         var.worker_groups_launch_template[count.index],
+        "root_volume_type",
+        local.workers_group_defaults["root_volume_type"],
+      ) == "gp2" ? null : lookup(
+        var.worker_groups_launch_template[count.index],
         "root_iops",
         local.workers_group_defaults["root_iops"],
       )
@@ -493,6 +497,10 @@ resource "aws_launch_template" "workers_launch_template" {
           local.workers_group_defaults["root_volume_type"],
         )
         iops = lookup(
+          block_device_mappings.value,
+          "volume_type",
+          local.workers_group_defaults["root_volume_type"],
+        ) == "gp2" ? null : lookup(
           block_device_mappings.value,
           "iops",
           local.workers_group_defaults["root_iops"],
