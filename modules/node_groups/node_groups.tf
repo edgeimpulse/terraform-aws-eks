@@ -69,6 +69,15 @@ resource "aws_eks_node_group" "workers" {
     lookup(var.node_groups[each.key], "additional_tags", {}),
   )
 
+  dynamic "taint" {
+    for_each = lookup(var.node_groups[each.key], "taints", {})
+    content {
+      key      = taint.value["key"]
+      value    = taint.value["value"]
+      effect   = taint.value["effect"]
+    }
+  }
+
   lifecycle {
     create_before_destroy = true
     ignore_changes        = [
